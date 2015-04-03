@@ -121,6 +121,31 @@ void* threadDo(void *arg){
 			// dangerous
 			strcpy(receiver, recvBuff);
 			
+			// check if the receiver exist
+			struct OnlineUser = find(receiver);
+			if (receiver == NULL){
+				// receiver does not exist
+				snprintf(sendBuff, sizeof(sendBuff), "error-receiver is not online");
+				write(connfd, sendBuff, strlen(sendBuff)); 
+			} else{
+			
+			
+			}
+			
+		} else if (strcmp(recvBuff, "Command - n2nChat") == 0){
+			// registration
+			puts("one2oneChat");
+			char receiver[50];
+			
+			// read userId
+			n = read(connfd,recvBuff,sizeof(recvBuff));
+			recvBuff[n] = 0;
+			
+			// dangerous
+			strcpy(receiver, recvBuff);
+			
+			
+			
 			
 		}
 	
