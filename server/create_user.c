@@ -4,7 +4,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <openssl/sha.h>
-//helloworld
+
 #define SALT_LEN 32
 #define IPAD 0x36
 #define OPAD 0x5C
