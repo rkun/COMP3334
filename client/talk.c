@@ -203,5 +203,5 @@ void one2oneChat(){
 
 
 void n2nChat(){
-	sendMsg("Command - n2nChat");
+
 }
