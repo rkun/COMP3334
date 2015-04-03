@@ -9,7 +9,7 @@
 #define IPAD 0x36
 #define OPAD 0x5C
 #define SHA256_BLOCK_LENGTH 64
-/* hellomario */
+/* hellorenee */
 void getSalt();
 void getDigest();
 void getHMAC();
