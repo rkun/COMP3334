@@ -49,7 +49,6 @@ int main(int argc, char *argv[])
 	BIO *pub;
 	size_t pubLen;
 	unsigned char *pubKey;
-	unsigned char rsaDecOut[RANDOM_STRING_LENGTH*2];
 	unsigned char sessionKey[AES_KEY_LENGTH];
 	unsigned char msg[512];
 	size_t msgLen;
