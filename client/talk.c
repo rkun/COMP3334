@@ -8,7 +8,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <arpa/inet.h> 
-#include <string.h>
+#include <pthread.h>
 
 #define PORTNUMBER 7000
 #define HOSTNAME "127.0.0.1"
@@ -28,12 +28,17 @@ void registration();
 void chooseChat();
 void one2oneChat();
 void n2nChat();
-
+void one2oneChat_waitRequest();
+void one2oneChat_sendRequest();
+void one2oneChat_chat();
+void* one2oneChat_chat_r(void *);
+void one2oneChat_chat_s();
 
 int main(int argc, char *argv[])
 {
 	connect2Server();
 	welcome();
+	chooseChat();
 	chooseChat();
 
     return 0;
@@ -98,10 +103,17 @@ void sendMsg(char* msg){
 }
 
 void recieveMsg(){
-	while ((n = read(sockfd,recvBuff,sizeof(recvBuff))) > 0){
+	
+	while ((n = read(sockfd,recvBuff,sizeof(recvBuff) - 1)) > 0){
 		recvBuff[n] = 0;
-		printf("%s", recvBuff);
+        if(fputs(recvBuff, stdout) == EOF)
+        {
+            printf("\n Error : Fputs error\n");
+        } else{
+			break;
+		}
 	}
+	
 }
 
 // not working now, fix later. 
@@ -147,6 +159,15 @@ void welcome(){
 
 void login(){
 	sendMsg("Command - login");
+	char userId[50], password[50];
+	scanf("%s %s", &userId, &password);
+
+	sendMsg(userId);
+	printf("user id = %s\n", userId);
+	recieveMsg();
+			
+			printf("password = %s\n", password);
+	sendMsg(password);
 }
 
 void registration(){
@@ -180,25 +201,111 @@ void chooseChat(){
 	int command, pass = 0;
 	while (pass == 0){
 		printf("> ");
-		scnaf(" %d", &command);
+		scanf(" %d", &command);
 		switch(command){
 			case 1:
 				one2oneChat();
+				pass = 1;
 				break;
 			case 2:
 				n2nChat();
+				pass = 1;
 				break;
 		}
 	}
 }
 
 void one2oneChat(){
-	char receiver[50];
-	printf("*Please enter the userId of the other user");
-	scanf(" %s", receiver);
-	
 	sendMsg("Command - one2oneChat");
+	printf("**********************************************************************\n");
+	printf("* 1. Wait for request\n");
+	printf("* 2. Send request to other user\n");
+	
+	int command, pass = 0;
+	while (pass == 0){
+		printf("> ");
+		scanf(" %d", &command);
+		switch(command){
+			case 1:
+				one2oneChat_waitRequest();
+				pass = 1;
+				break;
+			case 2:
+				one2oneChat_sendRequest();
+				pass = 1;
+				break;
+		}
+	}
+
+}
+
+
+void one2oneChat_waitRequest(){
+	char receiver[50];
+	sendMsg("Command - waitRequest");
+	printf("Waiting for request....\n");
+	recieveMsg();
+	printf("Accept? (Y/N)\n");
+	char c;
+	int pass = 0;
+	while (pass == 0){
+		printf("> ");
+		scanf(" %c", &c);
+		switch (c){
+			case 'Y':
+			case 'y':
+				sendMsg("OK");
+				printf("Start\n");
+				one2oneChat_chat();
+				pass = 1;
+				break;
+			case 'N':
+			case 'n':
+
+				pass = 1;
+				break;
+		}
+	}
+	
+	
+}
+
+void one2oneChat_sendRequest(){
+	char receiver[50];
+	sendMsg("Command - sendRequest");
+	
+	printf("*Please enter the userId of the other user\n> ");
+	scanf(" %s", &receiver);
 	sendMsg(receiver);
+	printf("Waiting\n");
+	recieveMsg();
+	one2oneChat_chat();
+}
+
+void one2oneChat_chat(){
+	pthread_t tid;
+	int err = pthread_create(&tid, NULL, &one2oneChat_chat_r, NULL);
+	one2oneChat_chat_s();
+}
+
+void* one2oneChat_chat_r(void* arg){
+	//puts("Receiving");
+	while(1){
+		recieveMsg();
+		printf("\n> ");
+		fflush(stdout);
+	}
+}
+void one2oneChat_chat_s(){
+	//puts("Sending");
+	char msg[1024];
+	getchar();
+	while(1){
+		printf("> ");
+		gets(msg);
+		printf("> You send: %s\n", msg);
+		sendMsg(msg);
+	}
 }
 
 
