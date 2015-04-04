@@ -46,14 +46,15 @@ int main(int argc, char *argv[])
 	unsigned char digest[SHA256_DIGEST_LENGTH];
 	AES_KEY aesKey;
 	unsigned char *aesOut;
-	unsigned char iv[AES_BLOCK_SIZE];	/* initialization vector for AES */
+    unsigned char encIv[AES_BLOCK_SIZE];    /* initialization vector for AES encryption */
+    unsigned char decIv[AES_BLOCK_SIZE];    /* initialization vector for AES decryption */
 	RSA *keypair;	/* public/private key pair */
 	BIO *pub;
 	size_t pubLen;
 	unsigned char *pubKey;
 	unsigned char sessionKey[AES_KEY_LENGTH];
-	unsigned char randomA[AES_KEY_LENGTH];
-	unsigned char randomB[AES_KEY_LENGTH];
+	unsigned char randomA[RANDOM_STRING_LENGTH];
+	unsigned char randomB[RANDOM_STRING_LENGTH];
 	unsigned char msg[512];	/* message from server */
 	size_t msgLen;	/* length of message from server */
 
@@ -82,84 +83,85 @@ int main(int argc, char *argv[])
 	pubKey = malloc(pubLen + 1);
 	pubKey[pubLen] = '\0';
 
-	/* generate initialization vector for AES encryption of public key */
-	RAND_bytes(iv, AES_BLOCK_SIZE);
-	/********************************
-     * send iv for pubKey to server *
-     ********************************/
+	/* generate encIv for AES encryption of public key */
+	RAND_bytes(encIv, AES_BLOCK_SIZE);
+	/***********************************
+     * send encIv for pubKey to server *
+     ***********************************/
 
-    /********************************
-     * wait for confirm message (?) *
-     ********************************/
+    /*************************************
+     * wait for confirmation message (?) *
+     *************************************/
 
 	/* AES encrypt with digest and send public key to server */
     aesOut = (unsigned char *) malloc(pubLen+AES_BLOCK_SIZE);
 	AES_set_encrypt_key(digest, SHA256_DIGEST_LENGTH, &aesKey);
-    AES_cbc_encrypt(pubKey, aesOut, pubLen, &aesKey, iv, AES_ENCRYPT);
+    AES_cbc_encrypt(pubKey, aesOut, pubLen, &aesKey, encIv, AES_ENCRYPT);
     /**********************************
      * send aesOut (pubKey) to server *
      **********************************/
 
-    /********************************************
-     * receive message (sessionKey) from server *
-     ********************************************/
+    /*********************************************
+     * receive encrypted session key from server *
+     *********************************************/
     /* decrypt the message and get session key */
     msgLen = strlen(msg);
     RSA_private_decrypt(msgLen, msg, sessionKey, keypair, RSA_PKCS1_OAEP_PADDING);
 
-    /* generate a random string */
+    /* generate randomA */
     RAND_bytes(randomA, RANDOM_STRING_LENGTH);
 
-    /* generate initialization vector for AES encryption of randomA */
-	RAND_bytes(iv, AES_BLOCK_SIZE);
-	/*********************************
-     * send iv for randomA to server *
-     *********************************/
+    /* generate encIv for AES encryption of randomA */
+	RAND_bytes(encIv, AES_BLOCK_SIZE);
 
-    /**********************************************
-     * receive iv for randomA+randomB from server *
-     **********************************************/
-
-    /* AES encrypt with session key and send the random string to server */
+    /* AES encrypt with session key and send randomA to server */
     aesOut = (unsigned char *) realloc(aesOut, RANDOM_STRING_LENGTH+AES_BLOCK_SIZE);
     AES_set_encrypt_key(sessionKey, AES_KEY_LENGTH, &aesKey);
-    AES_cbc_encrypt(randomA, aesOut, RANDOM_STRING_LENGTH, &aesKey, iv, AES_ENCRYPT);
+    AES_cbc_encrypt(randomA, aesOut, RANDOM_STRING_LENGTH, &aesKey, encIv, AES_ENCRYPT);
+    /************************************
+     * send encIv for randomA to server *
+     ************************************/
+
+    /*************************************************
+     * receive decIv for randomA+randomB from server *
+     *************************************************/
+
     /***********************************
      * send aesOut (randomA) to server *
      ***********************************/
 
 	/*************************************************
-     * receive message (randomA+randomB) from server *
+     * receive encrypted randomA+randomB from server *
      *************************************************/
     /* decrypt the message and get random string A and B */
-    aesOut = (unsigned char *) malloc(RANDOM_STRING_LENGTH*2);
+    aesOut = (unsigned char *) realloc(aesOut, RANDOM_STRING_LENGTH*2);
     AES_set_decrypt_key(sessionKey, AES_KEY_LENGTH, &aesKey);
-    AES_cbc_encrypt(msg, aesOut, RANDOM_STRING_LENGTH*2+AES_BLOCK_SIZE, &aesKey, iv, AES_DECRYPT);
+    AES_cbc_encrypt(msg, aesOut, RANDOM_STRING_LENGTH*2+AES_BLOCK_SIZE, &aesKey, decIv, AES_DECRYPT);
 
     /* Verify randomA */
     if (strncmp(randomA, aesOut, RANDOM_STRING_LENGTH) != 0)
     {
-    	printf("Random String Not Match\n");
+    	printf("Invalid Random String!\n");
     	exit(1);
     }
 
     /* get randomB */
     strncpy(randomB, aesOut[RANDOM_STRING_LENGTH], RANDOM_STRING_LENGTH);
 
-    /* generate initialization vector for AES encryption of randomB */
-	RAND_bytes(iv, AES_BLOCK_SIZE);
-	/*********************************
-     * send iv for randomB to server *
-     *********************************/
+    /* generate encIv for AES encryption of randomB */
+	RAND_bytes(encIv, AES_BLOCK_SIZE);
+	/************************************
+     * send encIv for randomB to server *
+     ************************************/
 
-    /********************************
-     * wait for confirm message (?) *
-     ********************************/
+    /*************************************
+     * wait for confirmation message (?) *
+     *************************************/
 
     /* AES encrypt with session key and sned randomB back to server */
     aesOut = (unsigned char *) realloc(aesOut, RANDOM_STRING_LENGTH+AES_BLOCK_SIZE);
     AES_set_encrypt_key(sessionKey, AES_KEY_LENGTH, &aesKey);
-    AES_cbc_encrypt(randomB, aesOut, RANDOM_STRING_LENGTH, &aesKey, iv, AES_ENCRYPT);
+    AES_cbc_encrypt(randomB, aesOut, RANDOM_STRING_LENGTH, &aesKey, encIv, AES_ENCRYPT);
     /***********************************
      * send aesOut (randomB) to server *
      ***********************************/
