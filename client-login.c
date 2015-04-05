@@ -12,6 +12,11 @@
 	6. Bob decrypts Rb and verifies his own Rb being valid.
 */
 
+#include <stdio.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <string.h>
+#include <stdlib.h>
 #include <openssl/sha.h>
 #include <openssl/aes.h>
 #include <openssl/rsa.h>
@@ -80,7 +85,8 @@ int main(int argc, char *argv[])
 	pub = BIO_new(BIO_s_mem());
 	PEM_write_bio_RSAPublicKey(pub, keypair);
 	pubLen = BIO_pending(pub);
-	pubKey = malloc(pubLen + 1);
+	pubKey = (unsigned char *) malloc(pubLen + 1);
+    BIO_read(pub, pubKey, pubLen);
 	pubKey[pubLen] = '\0';
 
 	/* generate encIv for AES encryption of public key */
@@ -94,8 +100,8 @@ int main(int argc, char *argv[])
      *************************************/
 
 	/* AES encrypt with digest and send public key to server */
-    aesOut = (unsigned char *) malloc(pubLen+AES_BLOCK_SIZE);
-	AES_set_encrypt_key(digest, SHA256_DIGEST_LENGTH, &aesKey);
+    aesOut = (unsigned char *) malloc(RSA_KEY_LENGTH/8*2);
+	AES_set_encrypt_key(digest, SHA256_DIGEST_LENGTH*8, &aesKey);
     AES_cbc_encrypt(pubKey, aesOut, pubLen, &aesKey, encIv, AES_ENCRYPT);
     /**********************************
      * send aesOut (pubKey) to server *
@@ -106,7 +112,7 @@ int main(int argc, char *argv[])
      *********************************************/
     /* decrypt the message and get session key */
     msgLen = strlen(msg);
-    RSA_private_decrypt(msgLen, msg, sessionKey, keypair, RSA_PKCS1_OAEP_PADDING);
+    RSA_private_decrypt(RSA_size(keypair), msg, sessionKey, keypair, RSA_PKCS1_OAEP_PADDING);
 
     /* generate randomA */
     RAND_bytes(randomA, RANDOM_STRING_LENGTH);
@@ -114,10 +120,6 @@ int main(int argc, char *argv[])
     /* generate encIv for AES encryption of randomA */
 	RAND_bytes(encIv, AES_BLOCK_SIZE);
 
-    /* AES encrypt with session key and send randomA to server */
-    aesOut = (unsigned char *) realloc(aesOut, RANDOM_STRING_LENGTH+AES_BLOCK_SIZE);
-    AES_set_encrypt_key(sessionKey, AES_KEY_LENGTH, &aesKey);
-    AES_cbc_encrypt(randomA, aesOut, RANDOM_STRING_LENGTH, &aesKey, encIv, AES_ENCRYPT);
     /************************************
      * send encIv for randomA to server *
      ************************************/
@@ -125,6 +127,11 @@ int main(int argc, char *argv[])
     /*************************************************
      * receive decIv for randomA+randomB from server *
      *************************************************/
+
+    /* AES encrypt with session key and send randomA to server */
+    aesOut = (unsigned char *) realloc(aesOut, RANDOM_STRING_LENGTH+AES_BLOCK_SIZE);
+    AES_set_encrypt_key(sessionKey, AES_KEY_LENGTH*8, &aesKey);
+    AES_cbc_encrypt(randomA, aesOut, RANDOM_STRING_LENGTH, &aesKey, encIv, AES_ENCRYPT);
 
     /***********************************
      * send aesOut (randomA) to server *
@@ -135,18 +142,18 @@ int main(int argc, char *argv[])
      *************************************************/
     /* decrypt the message and get random string A and B */
     aesOut = (unsigned char *) realloc(aesOut, RANDOM_STRING_LENGTH*2);
-    AES_set_decrypt_key(sessionKey, AES_KEY_LENGTH, &aesKey);
+    AES_set_decrypt_key(sessionKey, AES_KEY_LENGTH*8, &aesKey);
     AES_cbc_encrypt(msg, aesOut, RANDOM_STRING_LENGTH*2+AES_BLOCK_SIZE, &aesKey, decIv, AES_DECRYPT);
 
     /* Verify randomA */
-    if (strncmp(randomA, aesOut, RANDOM_STRING_LENGTH) != 0)
+    if (memcmp(randomA, aesOut, RANDOM_STRING_LENGTH) != 0)
     {
     	printf("Invalid Random String!\n");
     	exit(1);
     }
 
     /* get randomB */
-    strncpy(randomB, aesOut[RANDOM_STRING_LENGTH], RANDOM_STRING_LENGTH);
+    memcpy(randomB, aesOut+RANDOM_STRING_LENGTH, RANDOM_STRING_LENGTH);
 
     /* generate encIv for AES encryption of randomB */
 	RAND_bytes(encIv, AES_BLOCK_SIZE);
@@ -160,7 +167,7 @@ int main(int argc, char *argv[])
 
     /* AES encrypt with session key and sned randomB back to server */
     aesOut = (unsigned char *) realloc(aesOut, RANDOM_STRING_LENGTH+AES_BLOCK_SIZE);
-    AES_set_encrypt_key(sessionKey, AES_KEY_LENGTH, &aesKey);
+    AES_set_encrypt_key(sessionKey, AES_KEY_LENGTH*8, &aesKey);
     AES_cbc_encrypt(randomB, aesOut, RANDOM_STRING_LENGTH, &aesKey, encIv, AES_ENCRYPT);
     /***********************************
      * send aesOut (randomB) to server *

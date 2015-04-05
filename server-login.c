@@ -19,6 +19,8 @@
 #include <openssl/bio.h>
 #include <openssl/pem.h>
 
+#define SALT_LEN 32
+#define SHA256_BLOCK_LENGTH 64
 #define AES_KEY_LENGTH 32
 #define RANDOM_STRING_LENGTH 32
 #define RSA_KEY_LENGTH 2048	/* bit */
@@ -111,18 +113,31 @@ int main(int argc, char *argv[])
      * receive encrypted public key from client *
      ********************************************/
     /* decrypt the message and get public key */
-    pubKey = (unsigned char *) malloc(RSA_KEY_LENGTH/8);
-    AES_set_decrypt_key(sessionKey, AES_KEY_LENGTH, &aesKey);
-    AES_cbc_encrypt(msg, pubKey, AES_KEY_LENGTH+AES_BLOCK_SIZE, &aesKey, decIv, AES_DECRYPT);
+    pubKey = (unsigned char *) malloc(RSA_KEY_LENGTH/8*2);
+    AES_set_decrypt_key(sessionKey, AES_KEY_LENGTH*8, &aesKey);
+    AES_cbc_encrypt(msg, pubKey, RSA_KEY_LENGTH/8*2, &aesKey, decIv, AES_DECRYPT);
+
+    /* check if the decrypted data is in form of public key */
+    if (memcmp(aesOut, "-----BEGIN RSA PUBLIC KEY-----", 30) == 0 && memcmp(aesOut+strlen(aesOut)-29, "-----END RSA PUBLIC KEY-----", 28) == 0)
+    {
+        printf("public key form valid\n");
+        printf("correct password\n");
+    }
+    else
+    {
+        printf("public key invalid\n");
+        printf("wrong password\n");
+        exit(1);
+    }
 
     /* generate session key */
     RAND_bytes(sessionKey, AES_KEY_LENGTH);
 
     /* RSA encrypt with public key and send session key to client */
-    keybio = BIO_new_mem_buf(sessionKey, -1);
-    rsaOut = malloc(RSA_size(keypair));
-    keypair = PEM_read_bio_RSA_PUBKEY(keybio, &rsa,NULL, NULL);
-    rsaEncLen = RSA_public_encrypt(strlen(sessionKey)+1, sessionKey, rsaOut, keypair, RSA_PKCS1_OAEP_PADDING);
+    keybio = BIO_new_mem_buf(pubKey, -1);
+    keypair = PEM_read_bio_RSAPublicKEY(keybio, &keypair,NULL, NULL);
+    rsaOut = (unsigned char *) malloc(RSA_size(keypair));
+    rsaEncLen = RSA_public_encrypt(AES_KEY_LENGTH, sessionKey, rsaOut, keypair, RSA_PKCS1_OAEP_PADDING);
 
     /***************************************
 	 * send rsaOut (session key) to client *
@@ -142,19 +157,19 @@ int main(int argc, char *argv[])
      * receive encrypted randomA from client *
      *****************************************/
     /* decrypt the message and get randomA */
-    AES_set_decrypt_key(sessionKey, AES_KEY_LENGTH, &aesKey);
+    AES_set_decrypt_key(sessionKey, AES_KEY_LENGTH*8, &aesKey);
     AES_cbc_encrypt(msg, randomA, RANDOM_STRING_LENGTH+AES_BLOCK_SIZE, &aesKey, decIv, AES_DECRYPT);
 
     /* generate randomB */
     RAND_bytes(randomB, RANDOM_STRING_LENGTH);
 
     /* merge randomA and randomB */
-    strncpy(randomAnB, randomA, RANDOM_STRING_LENGTH);
-    strncat(randomAnB, randomB, RANDOM_STRING_LENGTH);
+    memcpy(randomAnB, randomA, RANDOM_STRING_LENGTH);
+    memcpy(randomAnB+RANDOM_STRING_LENGTH, randomB, RANDOM_STRING_LENGTH);
 
     /* AES encrypt with session key and send randomAnB to client */
     aesOut = (unsigned char *) malloc(RANDOM_STRING_LENGTH*2+AES_BLOCK_SIZE);
-    AES_set_encrypt_key(sessionKey, AES_KEY_LENGTH, &aesKey);
+    AES_set_encrypt_key(sessionKey, AES_KEY_LENGTH*8, &aesKey);
     AES_cbc_encrypt(randomAnB, aesOut, RANDOM_STRING_LENGTH*2, &aesKey, encIv, AES_ENCRYPT);
     /*************************************
      * send aesOut (randomAnB) to client *
@@ -172,12 +187,12 @@ int main(int argc, char *argv[])
      * receive encrypted randomB from client *
      *****************************************/
     /* decrypt the message and get randomB */
-    aesOut = (unsigned char *) realloc(RANDOM_STRING_LENGTH);
-    AES_set_decrypt_key(sessionKey, AES_KEY_LENGTH, &aesKey);
+    aesOut = (unsigned char *) realloc(aesOut, RANDOM_STRING_LENGTH);
+    AES_set_decrypt_key(sessionKey, AES_KEY_LENGTH*8, &aesKey);
     AES_cbc_encrypt(msg, aesOut, RANDOM_STRING_LENGTH+AES_BLOCK_SIZE, &aesKey, decIv, AES_DECRYPT);
 
-    /* Verify randomA */
-    if (strncmp(randomB, aesOut, RANDOM_STRING_LENGTH) != 0)
+    /* Verify randomB */
+    if (memcmp(randomB, aesOut, RANDOM_STRING_LENGTH) != 0)
     {
     	printf("Invalid Random String!\n");
     	exit(1);
