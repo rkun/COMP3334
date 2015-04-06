@@ -25,11 +25,44 @@
 #include <openssl/pem.h>
 
 #define SALT_LEN 32
-#define SHA256_BLOCK_LENGTH 64
-#define AES_KEY_LENGTH 32
 #define RANDOM_STRING_LENGTH 32
 #define RSA_KEY_LENGTH 2048	/* bit */
 #define RSA_KEY_EXP 3
+#define RSA_PADDING RSA_PKCS1_OAEP_PADDING
+
+void encryptWithAES(unsigned char* output, unsigned char* input, int inputLen, unsigned char* iv, unsigned char* key, int keyLen)
+{   /* inputLen and keyLen are in bytes */
+    AES_KEY aesKey;
+    AES_set_encrypt_key(key, keyLen*8, &aesKey);
+    AES_cbc_encrypt(input, output, inputLen, &aesKey, iv, AES_ENCRYPT);
+}
+
+void decryptWithAES(unsigned char* output, unsigned char* input, int inputLen, unsigned char* iv, unsigned char* key, int keyLen)
+{   /* inputLen and keyLen are in bytes */
+    AES_KEY aesKey;
+    AES_set_decrypt_key(key, keyLen*8, &aesKey);
+    AES_cbc_encrypt(input, output, inputLen, &aesKey, iv, AES_DECRYPT);
+}
+
+int extractRSAPubKey(unsigned char* pubKey, RSA* keypair)
+{
+    BIO* pub;
+    int pubKeyLen;
+
+    pub = BIO_new(BIO_s_mem());
+    PEM_write_bio_RSAPublicKey(pub, keypair);
+    pubKeyLen = BIO_pending(pub);
+    BIO_read(pub, pubKey, pubKeyLen);
+    pubKey[pubKeyLen] = '\0';
+
+    BIO_free_all(pub);
+    return pubKeyLen;   /* return the size of public key */
+}
+
+int decryptWithRSAPriKey(unsigned char* output, unsigned char* input, RSA* keypair)
+{
+    return RSA_private_decrypt(RSA_size(keypair), input, output, keypair, RSA_PADDING); /* return the size of recovered plaintext */
+}
 
 void getDigest(unsigned char* digest, unsigned char* salt, char* password)
 {
@@ -49,19 +82,17 @@ int main(int argc, char *argv[])
 {
 	unsigned char salt[SALT_LEN];
 	unsigned char digest[SHA256_DIGEST_LENGTH];
-	AES_KEY aesKey;
-	unsigned char *aesOut;
+	unsigned char *aesOut; /* output of AES encryption / decryption */
     unsigned char encIv[AES_BLOCK_SIZE];    /* initialization vector for AES encryption */
     unsigned char decIv[AES_BLOCK_SIZE];    /* initialization vector for AES decryption */
 	RSA *keypair;	/* public/private key pair */
-	BIO *pub;
-	size_t pubLen;
-	unsigned char *pubKey;
-	unsigned char sessionKey[AES_KEY_LENGTH];
+	unsigned char pubKey[RSA_KEY_LENGTH/8*2];
+    int pubKeyLen;
+	unsigned char sessionKey[32]; /* max AES key length is 256-bit */
+    int sesKeyLen;
 	unsigned char randomA[RANDOM_STRING_LENGTH];
 	unsigned char randomB[RANDOM_STRING_LENGTH];
 	unsigned char msg[512];	/* message from server */
-	size_t msgLen;	/* length of message from server */
 
 	/****************************************
 	 * read username and password from user *
@@ -76,18 +107,14 @@ int main(int argc, char *argv[])
 	 ****************************/
 
 	/* generate hash of password+salt */
-	getDigest(digest, salt, password);
+	getDigest(digest, salt, /* password */);
 
 	/* generate public/private key pair for RSA */
 	keypair = RSA_generate_key(RSA_KEY_LENGTH, RSA_KEY_EXP, NULL, NULL);
 
 	/* extract public key from key pair */
-	pub = BIO_new(BIO_s_mem());
-	PEM_write_bio_RSAPublicKey(pub, keypair);
-	pubLen = BIO_pending(pub);
-	pubKey = (unsigned char *) malloc(pubLen + 1);
-    BIO_read(pub, pubKey, pubLen);
-	pubKey[pubLen] = '\0';
+    pubKeyLen = extractRSAPubKey(pubKey, keypair);
+
 
 	/* generate encIv for AES encryption of public key */
 	RAND_bytes(encIv, AES_BLOCK_SIZE);
@@ -101,8 +128,7 @@ int main(int argc, char *argv[])
 
 	/* AES encrypt with digest and send public key to server */
     aesOut = (unsigned char *) malloc(RSA_KEY_LENGTH/8*2);
-	AES_set_encrypt_key(digest, SHA256_DIGEST_LENGTH*8, &aesKey);
-    AES_cbc_encrypt(pubKey, aesOut, pubLen, &aesKey, encIv, AES_ENCRYPT);
+    encryptWithAES(aesOut, pubKey, pubKeyLen, encIv, digest, SHA256_DIGEST_LENGTH);
     /**********************************
      * send aesOut (pubKey) to server *
      **********************************/
@@ -111,8 +137,7 @@ int main(int argc, char *argv[])
      * receive encrypted session key from server *
      *********************************************/
     /* decrypt the message and get session key */
-    msgLen = strlen(msg);
-    RSA_private_decrypt(RSA_size(keypair), msg, sessionKey, keypair, RSA_PKCS1_OAEP_PADDING);
+    sesKeyLen = decryptWithRSAPriKey(sessionKey, msg, keypair);
 
     /* generate randomA */
     RAND_bytes(randomA, RANDOM_STRING_LENGTH);
@@ -130,8 +155,7 @@ int main(int argc, char *argv[])
 
     /* AES encrypt with session key and send randomA to server */
     aesOut = (unsigned char *) realloc(aesOut, RANDOM_STRING_LENGTH+AES_BLOCK_SIZE);
-    AES_set_encrypt_key(sessionKey, AES_KEY_LENGTH*8, &aesKey);
-    AES_cbc_encrypt(randomA, aesOut, RANDOM_STRING_LENGTH, &aesKey, encIv, AES_ENCRYPT);
+    encryptWithAES(aesOut, randomA, RANDOM_STRING_LENGTH, encIv, sessionKey, sesKeyLen);
 
     /***********************************
      * send aesOut (randomA) to server *
@@ -142,8 +166,7 @@ int main(int argc, char *argv[])
      *************************************************/
     /* decrypt the message and get random string A and B */
     aesOut = (unsigned char *) realloc(aesOut, RANDOM_STRING_LENGTH*2);
-    AES_set_decrypt_key(sessionKey, AES_KEY_LENGTH*8, &aesKey);
-    AES_cbc_encrypt(msg, aesOut, RANDOM_STRING_LENGTH*2+AES_BLOCK_SIZE, &aesKey, decIv, AES_DECRYPT);
+    decryptWithAES(aesOut, msg, RANDOM_STRING_LENGTH*2+AES_BLOCK_SIZE, decIv, sessionKey, sesKeyLen);
 
     /* Verify randomA */
     if (memcmp(randomA, aesOut, RANDOM_STRING_LENGTH) != 0)
@@ -167,14 +190,11 @@ int main(int argc, char *argv[])
 
     /* AES encrypt with session key and sned randomB back to server */
     aesOut = (unsigned char *) realloc(aesOut, RANDOM_STRING_LENGTH+AES_BLOCK_SIZE);
-    AES_set_encrypt_key(sessionKey, AES_KEY_LENGTH*8, &aesKey);
-    AES_cbc_encrypt(randomB, aesOut, RANDOM_STRING_LENGTH, &aesKey, encIv, AES_ENCRYPT);
+    encryptWithAES(aesOut, randomB, RANDOM_STRING_LENGTH, encIv, sessionKey, sesKeyLen);
     /***********************************
      * send aesOut (randomB) to server *
      ***********************************/
 
     RSA_free(keypair);
-    BIO_free_all(pub);
-    free(pubKey);
     free(aesOut);
 }

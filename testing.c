@@ -30,6 +30,57 @@
 #define RANDOM_STRING_LENGTH 32
 #define RSA_KEY_LENGTH 2048	/* bit */
 #define RSA_KEY_EXP 3
+#define RSA_PADDING RSA_PKCS1_OAEP_PADDING
+
+void encryptWithAES(unsigned char* output, unsigned char* input, int inputLen, unsigned char* iv, unsigned char* key, int keyLen)
+{
+    AES_KEY aesKey;
+    AES_set_encrypt_key(key, keyLen, &aesKey);
+    AES_cbc_encrypt(input, output, inputLen, &aesKey, iv, AES_ENCRYPT);
+}
+
+void decryptWithAES(unsigned char* output, unsigned char* input, int inputLen, unsigned char* iv, unsigned char* key, int keyLen)
+{
+    AES_KEY aesKey;
+    AES_set_decrypt_key(key, keyLen, &aesKey);
+    AES_cbc_encrypt(input, output, inputLen, &aesKey, iv, AES_DECRYPT);
+}
+
+int extractRSAPubKey(unsigned char* pubKey, RSA* keypair)
+{
+    BIO* pub;
+    int pubKeyLen;
+
+    pub = BIO_new(BIO_s_mem());
+    PEM_write_bio_RSAPublicKey(pub, keypair);
+    pubKeyLen = BIO_pending(pub);
+    // pubKey = (unsigned char *) malloc(pubKeyLen + 1);
+    BIO_read(pub, pubKey, pubKeyLen);
+    pubKey[pubKeyLen] = '\0';
+
+    BIO_free_all(pub);
+    return pubKeyLen;
+}
+
+int encryptWithRSAPubKey(unsigned char* output, unsigned char* input, int inputLen, unsigned char* pubKey)
+{
+    RSA* keypair;
+    BIO* keybio;
+    int cipherLen;
+
+    keybio = BIO_new_mem_buf(pubKey, -1);
+    keypair = PEM_read_bio_RSAPublicKey(keybio, &keypair,NULL, NULL);
+    cipherLen = RSA_public_encrypt(inputLen, input, output, keypair, RSA_PADDING);
+
+    RSA_free(keypair);
+    BIO_free_all(keybio);
+    return cipherLen;   /* return the size of ciphertext */
+}
+
+int decryptWithRSAPriKey(unsigned char* output, unsigned char* input, RSA* keypair)
+{
+    return RSA_private_decrypt(RSA_size(keypair), input, output, keypair, RSA_PADDING);
+}
 
 void getDigest(unsigned char* digest, unsigned char* salt, char* password)
 {
@@ -55,8 +106,8 @@ int main(int argc, char *argv[])
     unsigned char decIv[AES_BLOCK_SIZE];    /* initialization vector for AES decryption */
 	RSA *keypair;	/* public/private key pair */
 	BIO *pub;
-	size_t pubLen;
-	unsigned char *pubKey;
+	int pubKeyLen;
+	unsigned char pubKey[RSA_KEY_LENGTH/8*2];
 	unsigned char sessionKey[AES_KEY_LENGTH+1];
 	unsigned char randomA[RANDOM_STRING_LENGTH+1];
 	unsigned char randomB[RANDOM_STRING_LENGTH+1];
@@ -70,6 +121,7 @@ int main(int argc, char *argv[])
     unsigned char *rsaOut;
     unsigned char sessionKey2[AES_KEY_LENGTH+1];
     unsigned char randomAnB[RANDOM_STRING_LENGTH*2+1];
+    int sessionKey2Len;
 
 	/****************************************
 	 * read username and password from user *
@@ -91,113 +143,146 @@ int main(int argc, char *argv[])
 	keypair = RSA_generate_key(RSA_KEY_LENGTH, RSA_KEY_EXP, NULL, NULL);
 
 	/* extract public key from key pair */
-	pub = BIO_new(BIO_s_mem());
-	PEM_write_bio_RSAPublicKey(pub, keypair);
-	pubLen = BIO_pending(pub);
-    printf("pubLen = %zu\n", pubLen);
-	pubKey = (unsigned char *) malloc(pubLen + 1);
-    BIO_read(pub, pubKey, pubLen);
-	pubKey[pubLen] = '\0';
+	// pub = BIO_new(BIO_s_mem());
+	// PEM_write_bio_RSAPublicKey(pub, keypair);
+	// pubKeyLen = BIO_pending(pub);
+ //    printf("pubKeyLen = %zu\n", pubKeyLen);
+	// pubKey = (unsigned char *) malloc(pubKeyLen + 1);
+ //    BIO_read(pub, pubKey, pubKeyLen);
+	// pubKey[pubKeyLen] = '\0';
 
+    printf("\n\nNow start testing AES for public Key\n\n");
+
+    pubKeyLen = extractRSAPubKey(pubKey, keypair);
+    printf("public key length = %d\n", pubKeyLen);
     printf("\n%s\n", pubKey);
+
 	/* generate encIv for AES encryption of public key */
 	RAND_bytes(encIv, AES_BLOCK_SIZE);
     strncpy(decIv, encIv, AES_BLOCK_SIZE);
-	/***********************************
-     * send encIv for pubKey to server *
-     ***********************************/
 
-    /*************************************
-     * wait for confirmation message (?) *
-     *************************************/
-    printf("start encrypting...\n");
+    printf("-----start encrypting...-----\n");
 	/* AES encrypt with digest and send public key to server */
     aesOut = (unsigned char *) malloc(RSA_KEY_LENGTH/8*2);
-	AES_set_encrypt_key(digest, SHA256_DIGEST_LENGTH*8, &aesKey);
-    AES_cbc_encrypt(pubKey, aesOut, pubLen, &aesKey, encIv, AES_ENCRYPT);
-    msgLen = strlen(aesOut);
-    printf("msgLen(aesOut): %zu\n", msgLen);
+	// AES_set_encrypt_key(digest, SHA256_DIGEST_LENGTH*8, &aesKey);
+ //    AES_cbc_encrypt(pubKey, aesOut, pubKeyLen, &aesKey, encIv, AES_ENCRYPT);
+    encryptWithAES(aesOut, pubKey, pubKeyLen, encIv, digest, SHA256_DIGEST_LENGTH*8);
+    printf("Encrypted pubKey length: %zu\n", strlen(aesOut));
 
-    printf("start decrypting...\n");
+    printf("-----start decrypting...-----\n");
     // memcpy(digest, "rã-·∆CmÆ9∆/3V†&Æ$ÑõŒ∂\"8U“¶Ã", SHA256_DIGEST_LENGTH);
     decOut = (unsigned char *) malloc(RSA_KEY_LENGTH/8*2);
-    AES_set_decrypt_key(digest, SHA256_DIGEST_LENGTH*8, &decKey);
-    AES_cbc_encrypt(aesOut, decOut, RSA_KEY_LENGTH/8*2, &decKey, decIv, AES_DECRYPT);
-
+    // AES_set_decrypt_key(digest, SHA256_DIGEST_LENGTH*8, &decKey);
+    // AES_cbc_encrypt(aesOut, decOut, RSA_KEY_LENGTH/8*2, &decKey, decIv, AES_DECRYPT);
+    decryptWithAES(decOut, aesOut, RSA_KEY_LENGTH/8*2, decIv, digest, SHA256_DIGEST_LENGTH*8);
     printf("\n%s\n", decOut);
-    msgLen = strlen(decOut);
-    printf("msgLen: %zu\n", msgLen);
+    printf("Decrypted public key length: %zu\n", strlen(decOut));
     if (memcmp(decOut, "-----BEGIN RSA PUBLIC KEY-----", 30) == 0 && memcmp(decOut+strlen(decOut)-29, "-----END RSA PUBLIC KEY-----", 28) == 0)
         printf("public key valid\n");
     else
+    {
         printf("public key invalid\n");
+        exit(1);
+    }
 
-    printf("Now start testing RSA\n\n");
+    if(memcmp(decOut, pubKey, pubKeyLen) == 0)
+        printf("-----both public key match-----\n");
+    else
+    {
+        printf("-----public key not match-----\n");
+        exit(1);
+    }
+
+
+
+
+
+    printf("\n\nNow start testing RSA\n\n");
 
     /* generate session key */
     RAND_bytes(sessionKey, AES_KEY_LENGTH);
     sessionKey[AES_KEY_LENGTH] = '\0';
     printf("sessionKey = %s\n", sessionKey);
+    printf("sessionKey length = %zu\n", strlen(sessionKey));
 
     /* RSA encrypt with public key and send session key to client */
-    printf("start RSA encryption...\n");
+    printf("-----start RSA encryption...-----\n");
+    // keybio = BIO_new_mem_buf(decOut, -1);
+    // keypair2 = PEM_read_bio_RSAPublicKey(keybio, &keypair2, NULL, NULL);
+    // rsaOut = (unsigned char *) malloc(RSA_size(keypair2));
+    // rsaEncLen = RSA_public_encrypt(AES_KEY_LENGTH, sessionKey, rsaOut, keypair2, RSA_PADDING);
+    rsaOut = (unsigned char *) malloc(RSA_KEY_LENGTH/8);
+    rsaEncLen = encryptWithRSAPubKey(rsaOut, sessionKey, AES_KEY_LENGTH, pubKey);
+    printf("Encrypted session key length = %d\n", rsaEncLen);
 
-    keybio = BIO_new_mem_buf(decOut, -1);
-    // keypair2 = PEM_read_bio_RSA_PUBKEY(keybio, &keypair2, NULL, NULL);
-    keypair2 = PEM_read_bio_RSAPublicKey(keybio, &keypair2, NULL, NULL);
-
-    rsaOut = (unsigned char *) malloc(RSA_size(keypair2));
-    rsaEncLen = RSA_public_encrypt(AES_KEY_LENGTH, sessionKey, rsaOut, keypair2, RSA_PKCS1_OAEP_PADDING);
-
-    printf("rsaEncLen = %d\n", rsaEncLen);
-
-    printf("start RSA decryption...\n");
+    printf("-----start RSA decryption...-----\n");
     // msgLen = strlen(rsaOut);
     // printf("msgLen = %zu\n", msgLen);
-    RSA_private_decrypt(RSA_size(keypair), rsaOut, sessionKey2, keypair, RSA_PKCS1_OAEP_PADDING);
-    printf("hello\n");
+    // sessionKey2Len = RSA_private_decrypt(RSA_size(keypair), rsaOut, sessionKey2, keypair, RSA_PADDING);
+    sessionKey2Len = decryptWithRSAPriKey(sessionKey2, rsaOut, keypair);
+    printf("Decrypted sessionKey length = %d\n", sessionKey2Len);
     sessionKey2[AES_KEY_LENGTH] = '\0';
-    printf("sessionKey2 = %s\n", sessionKey2);
+    printf("Decrypted sessionKey = %s\n", sessionKey2);
 
     if (memcmp(sessionKey, sessionKey2, AES_KEY_LENGTH) == 0)
-        printf("both key matches\n");
+        printf("-----both session key matches-----\n");
+    else
+    {
+        printf("-----session key not match-----\n");
+        exit(1);
+    }
 
-    printf("Now start testing AES for randomA\n\n");
+
+
+
+
+    printf("\n\nNow start testing AES for randomA\n\n");
 
     /* generate randomA */
     RAND_bytes(randomA, RANDOM_STRING_LENGTH);
     randomA[RANDOM_STRING_LENGTH] = '\0';
     printf("randomA: %s\n", randomA);
+    printf("randomA length = %zu\n", strlen(randomA));
 
     /* generate encIv for AES encryption of randomA */
     RAND_bytes(encIv, AES_BLOCK_SIZE);
     memcpy(decIv, encIv, AES_BLOCK_SIZE);
 
-    printf("start encrypting...\n");
+    printf("-----start encrypting...-----\n");
     /* AES encrypt with session key and send randomA to server */
     aesOut = (unsigned char *) realloc(aesOut, RANDOM_STRING_LENGTH+AES_BLOCK_SIZE);
     AES_set_encrypt_key(sessionKey, AES_KEY_LENGTH*8, &aesKey);
     AES_cbc_encrypt(randomA, aesOut, RANDOM_STRING_LENGTH, &aesKey, encIv, AES_ENCRYPT);
-    printf("strlen(aesOut) = %zu\n", strlen(aesOut));
+    printf("Ecrypted randomA length = %zu\n", strlen(aesOut));
 
-    printf("start decrypting...\n");
+    printf("-----start decrypting...-----\n");
     // decOut = (unsigned char *) realloc(decOut, RANDOM_STRING_LENGTH);
     AES_set_decrypt_key(sessionKey2, AES_KEY_LENGTH*8, &decKey);
     AES_cbc_encrypt(aesOut, randomB, RANDOM_STRING_LENGTH+AES_BLOCK_SIZE, &decKey, decIv, AES_DECRYPT);
     randomB[RANDOM_STRING_LENGTH] = '\0';
-    printf("randomB: %s\n", randomB);
+    printf("Decrypted randomA length = %zu\n", strlen(randomB));
+    printf("Dectypted randomA: %s\n", randomB);
 
     if (memcmp(randomA, randomB, AES_KEY_LENGTH) == 0)
-        printf("both random matches\n");
+        printf("-----both randomA matches-----\n");
+    else
+    {
+        printf("-----randomA not match-----\n");
+        exit(1);
+    }
 
 
-    printf("\nNow start testing AES for randomAnB\n\n");
+
+
+
+    printf("\n\nNow start testing AES for randomAnB\n\n");
     memcpy(randomAnB, randomA, RANDOM_STRING_LENGTH);
     memcpy(randomAnB+RANDOM_STRING_LENGTH, randomB, RANDOM_STRING_LENGTH);
     randomAnB[RANDOM_STRING_LENGTH*2] = '\0';
     printf("randomAnB: %s\n", randomAnB);
+    printf("randomAnB length = %zu\n", strlen(randomAnB));
 
-    printf("start encrypting...\n");
+    printf("-----start encrypting...-----\n");
     /* generate encIv for AES encryption of randomAnB */
     RAND_bytes(encIv, AES_BLOCK_SIZE);
     memcpy(decIv, encIv, AES_BLOCK_SIZE);
@@ -205,21 +290,27 @@ int main(int argc, char *argv[])
     aesOut = (unsigned char *) realloc(aesOut, RANDOM_STRING_LENGTH*2+AES_BLOCK_SIZE);
     AES_set_encrypt_key(sessionKey, AES_KEY_LENGTH*8, &aesKey);
     AES_cbc_encrypt(randomAnB, aesOut, RANDOM_STRING_LENGTH*2, &aesKey, encIv, AES_ENCRYPT);
-    printf("strlen(aesOut) = %zu\n", strlen(aesOut));
+    printf("Encrypted randomAnB length = %zu\n", strlen(aesOut));
 
-    printf("start decrypting...\n");
+    printf("-----start decrypting...-----\n");
     decOut = (unsigned char *) realloc(decOut, RANDOM_STRING_LENGTH*2+1);
     AES_set_decrypt_key(sessionKey2, AES_KEY_LENGTH*8, &decKey);
     AES_cbc_encrypt(aesOut, decOut, RANDOM_STRING_LENGTH*2+AES_BLOCK_SIZE, &decKey, decIv, AES_DECRYPT);
     decOut[RANDOM_STRING_LENGTH*2] = '\0';
-    printf("decOut: %s\n", decOut);
+    printf("Decrypted randomAnB length = %zu\n", strlen(randomAnB));
+    printf("Decrypted randomAnB: %s\n", decOut);
 
     if (memcmp(randomAnB, decOut, RANDOM_STRING_LENGTH*2) == 0)
-        printf("both random matches\n");
+        printf("-----both randomAnB matches-----\n");
+    else
+    {
+        printf("-----randomAnB not match-----\n");
+        exit(1);
+    }
 
     RSA_free(keypair);
-    BIO_free_all(pub);
-    free(pubKey);
+    // BIO_free_all(pub);
+    // free(pubKey);
     free(aesOut);
     free(decOut);
 }

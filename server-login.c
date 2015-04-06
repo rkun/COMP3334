@@ -20,11 +20,40 @@
 #include <openssl/pem.h>
 
 #define SALT_LEN 32
-#define SHA256_BLOCK_LENGTH 64
-#define AES_KEY_LENGTH 32
+#define SESSION_KEY_LENGTH 32
 #define RANDOM_STRING_LENGTH 32
 #define RSA_KEY_LENGTH 2048	/* bit */
 #define RSA_KEY_EXP 3
+#define RSA_PADDING RSA_PKCS1_OAEP_PADDING
+
+void encryptWithAES(unsigned char* output, unsigned char* input, int inputLen, unsigned char* iv, unsigned char* key, int keyLen)
+{	/* inputLen and keyLen are in bytes */
+    AES_KEY aesKey;
+    AES_set_encrypt_key(key, keyLen*8, &aesKey);
+    AES_cbc_encrypt(input, output, inputLen, &aesKey, iv, AES_ENCRYPT);
+}
+
+void decryptWithAES(unsigned char* output, unsigned char* input, int inputLen, unsigned char* iv, unsigned char* key, int keyLen)
+{	/* inputLen and keyLen are in bytes */
+    AES_KEY aesKey;
+    AES_set_decrypt_key(key, keyLen*8, &aesKey);
+    AES_cbc_encrypt(input, output, inputLen, &aesKey, iv, AES_DECRYPT);
+}
+
+int encryptWithRSAPubKey(unsigned char* output, unsigned char* input, int inputLen, unsigned char* pubKey)
+{	/* inputLen is in bytes */
+    RSA* keypair;
+    BIO* keybio;
+    int cipherLen;
+
+    keybio = BIO_new_mem_buf(pubKey, -1);
+    keypair = PEM_read_bio_RSAPublicKey(keybio, &keypair,NULL, NULL);
+    cipherLen = RSA_public_encrypt(inputLen, input, output, keypair, RSA_PADDING);
+
+    RSA_free(keypair);
+    BIO_free_all(keybio);
+    return cipherLen;	/* return the size of ciphertext */
+}
 
 void readSalt(unsigned char* salt, char* username, FILE* inputFile)
 {
@@ -75,21 +104,17 @@ int main(int argc, char *argv[])
 {
 	unsigned char salt[SALT_LEN];
 	unsigned char digest[SHA256_DIGEST_LENGTH];
-	AES_KEY aesKey;
-	unsigned char *aesOut;
+	unsigned char *aesOut;	/* output of AES encryption / decryption */
 	unsigned char encIv[AES_BLOCK_SIZE];    /* initialization vector for AES encryption */
     unsigned char decIv[AES_BLOCK_SIZE];    /* initialization vector for AES decryption */
-	RSA *keypair;	/* public/private key pair */
-	BIO *keybio;
-	int rsaEncLen;
 	unsigned char *rsaOut;
-	unsigned char *pubKey;
-	unsigned char sessionKey[AES_KEY_LENGTH];
+	int rsaOutLen;
+	unsigned char pubKey[RSA_KEY_LENGTH/8*2];
+	unsigned char sessionKey[SESSION_KEY_LENGTH];
 	unsigned char randomA[RANDOM_STRING_LENGTH];
 	unsigned char randomB[RANDOM_STRING_LENGTH];
 	unsigned char randomAnB[RANDOM_STRING_LENGTH*2];
 	unsigned char msg[512];	/* message from server */
-	size_t msgLen;	/* length of message from server */
 
 	/********************************
 	 * receive username from client *
@@ -112,10 +137,12 @@ int main(int argc, char *argv[])
     /********************************************
      * receive encrypted public key from client *
      ********************************************/
+
+    /* read digest */
+	readDigest(digest, /* inputFile */);
+
     /* decrypt the message and get public key */
-    pubKey = (unsigned char *) malloc(RSA_KEY_LENGTH/8*2);
-    AES_set_decrypt_key(sessionKey, AES_KEY_LENGTH*8, &aesKey);
-    AES_cbc_encrypt(msg, pubKey, RSA_KEY_LENGTH/8*2, &aesKey, decIv, AES_DECRYPT);
+    decryptWithAES(pubKey, msg, RSA_KEY_LENGTH/8*2, decIv, digest, SHA256_DIGEST_LENGTH);
 
     /* check if the decrypted data is in form of public key */
     if (memcmp(aesOut, "-----BEGIN RSA PUBLIC KEY-----", 30) == 0 && memcmp(aesOut+strlen(aesOut)-29, "-----END RSA PUBLIC KEY-----", 28) == 0)
@@ -131,13 +158,11 @@ int main(int argc, char *argv[])
     }
 
     /* generate session key */
-    RAND_bytes(sessionKey, AES_KEY_LENGTH);
+    RAND_bytes(sessionKey, SESSION_KEY_LENGTH);
 
     /* RSA encrypt with public key and send session key to client */
-    keybio = BIO_new_mem_buf(pubKey, -1);
-    keypair = PEM_read_bio_RSAPublicKEY(keybio, &keypair,NULL, NULL);
-    rsaOut = (unsigned char *) malloc(RSA_size(keypair));
-    rsaEncLen = RSA_public_encrypt(AES_KEY_LENGTH, sessionKey, rsaOut, keypair, RSA_PKCS1_OAEP_PADDING);
+    rsaOut = (unsigned char *) malloc(RSA_KEY_LENGTH/8);
+    rsaOutLen = encryptWithRSAPubKey(rsaOut, sessionKey, SESSION_KEY_LENGTH, pubKey);
 
     /***************************************
 	 * send rsaOut (session key) to client *
@@ -157,8 +182,7 @@ int main(int argc, char *argv[])
      * receive encrypted randomA from client *
      *****************************************/
     /* decrypt the message and get randomA */
-    AES_set_decrypt_key(sessionKey, AES_KEY_LENGTH*8, &aesKey);
-    AES_cbc_encrypt(msg, randomA, RANDOM_STRING_LENGTH+AES_BLOCK_SIZE, &aesKey, decIv, AES_DECRYPT);
+    decryptWithAES(randomA, msg, RANDOM_STRING_LENGTH+AES_BLOCK_SIZE, decIv, sessionKey, SESSION_KEY_LENGTH);
 
     /* generate randomB */
     RAND_bytes(randomB, RANDOM_STRING_LENGTH);
@@ -169,8 +193,7 @@ int main(int argc, char *argv[])
 
     /* AES encrypt with session key and send randomAnB to client */
     aesOut = (unsigned char *) malloc(RANDOM_STRING_LENGTH*2+AES_BLOCK_SIZE);
-    AES_set_encrypt_key(sessionKey, AES_KEY_LENGTH*8, &aesKey);
-    AES_cbc_encrypt(randomAnB, aesOut, RANDOM_STRING_LENGTH*2, &aesKey, encIv, AES_ENCRYPT);
+    encryptWithAES(aesOut, randomAnB, RANDOM_STRING_LENGTH*2, encIv, sessionKey, SESSION_KEY_LENGTH);
     /*************************************
      * send aesOut (randomAnB) to client *
      *************************************/
@@ -188,8 +211,7 @@ int main(int argc, char *argv[])
      *****************************************/
     /* decrypt the message and get randomB */
     aesOut = (unsigned char *) realloc(aesOut, RANDOM_STRING_LENGTH);
-    AES_set_decrypt_key(sessionKey, AES_KEY_LENGTH*8, &aesKey);
-    AES_cbc_encrypt(msg, aesOut, RANDOM_STRING_LENGTH+AES_BLOCK_SIZE, &aesKey, decIv, AES_DECRYPT);
+    decryptWithAES(aesOut, msg, RANDOM_STRING_LENGTH+AES_BLOCK_SIZE, decIv, sessionKey, SESSION_KEY_LENGTH);
 
     /* Verify randomB */
     if (memcmp(randomB, aesOut, RANDOM_STRING_LENGTH) != 0)
@@ -198,9 +220,6 @@ int main(int argc, char *argv[])
     	exit(1);
     }
 
-    RSA_free(keypair);
-    BIO_free_all(keybio);
-    free(pubKey);
     free(aesOut);
     free(rsaOut);
 }
